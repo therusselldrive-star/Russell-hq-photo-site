@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Russell HQ Photography</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Stripe.js script for handling checkout redirection -->
+    <script src="https://js.stripe.com/v3/"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Kalam:wght@300;400;700&family=Patrick+Hand&family=Special+Elite&display=swap" rel="stylesheet">
+    <style>
+      body {
+        background-color: #3a2d21;
+        background-image: url('https://www.transparenttextures.com/patterns/wood-pattern.png');
+        font-family: 'Patrick Hand', cursive;
+      }
+      .font-caveat { font-family: 'Caveat', cursive; }
+      .font-kalam { font-family: 'Kalam', cursive; }
+      .font-special-elite { font-family: 'Special Elite', cursive; }
+      .font-patrick-hand { font-family: 'Patrick Hand', cursive; }
+
+      /* Custom torn paper effect */
+      .torn-paper {
+        background-color: #fdfbf5;
+        background-image: url(https://www.transparenttextures.com/patterns/paper.png);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.35);
+        position: relative;
+        padding: 2rem;
+      }
+      .torn-paper::before, .torn-paper::after {
+        content: '';
+        position: absolute;
+        width: 100%;
+        height: 15px;
+        background-image: linear-gradient(45deg, transparent 50%, #3a2d21 50%), linear-gradient(-45deg, transparent 50%, #3a2d21 50%);
+        background-size: 15px 15px;
+        background-repeat: repeat-x;
+      }
+      .torn-paper::before {
+        top: -15px;
+        left: 0;
+        background-position: 0 100%;
+      }
+      .torn-paper::after {
+        bottom: -15px;
+        left: 0;
+        transform: rotate(180deg);
+        background-position: 0 100%;
+      }
+      .line-clamp-2 {
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+      }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js",
+        "firebase/storage": "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js"
+      }
+    }
+    </script>
+</head>
+<body>
+    <div id="app-root"></div>
+
+    <script type="module">
+      // =============================================
+      // START: FIREBASE CONFIG & INITIALIZATION
+      // =============================================
+      const firebaseConfig = {
+        apiKey: "AIzaSyD99cxkau_1z0ZSS2pqGBBv4pQ9I0xUy0E",
+        authDomain: "russell-hq-1db37.firebaseapp.com",
+        projectId: "russell-hq-1db37",
+        storageBucket: "russell-hq-1db37.firebasestorage.app",
+        messagingSenderId: "108178607549",
+        appId: "1:108178607549:web:7b268255f672c3311a96d4",
+        measurementId: "G-C5XX39LKMJ"
+      };
+
+      import { initializeApp } from "firebase/app";
+      import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+      import { getFirestore, collection, getDocs, doc, getDoc, addDoc, setDoc, deleteDoc, where, query, collection as firestoreCollection, serverTimestamp } from "firebase/firestore";
+      import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
+      
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+      const storage = getStorage(app);
+
+      // =============================================
+      // START: AUTH CONTEXT
+      // =============================================
+      let currentUser = null;
+      let authLoading = true;
+      let authError = null;
+      let resolveAuthReadyPromise;
+      const authReadyPromise = new Promise(resolve => {
+          resolveAuthReadyPromise = resolve;
+      });
+      let isAuthReady = false;
+
+      const AuthContext = {
+        initialize: () => {
+          onAuthStateChanged(auth, async (user) => {
+            if (user) {
+              authError = null;
+              try {
+                const userDocRef = doc(db, 'users', user.uid);
+                const userDoc = await getDoc(userDocRef);
+                currentUser = {
+                  uid: user.uid,
+                  email: user.email,
+                  isAdmin: userDoc.exists() && userDoc.data().isAdmin === true,
+                };
+              } catch (error) {
+                console.error("Failed to fetch user data from Firestore:", error);
+                authError = "Could not verify user permissions.";
+                currentUser = {
+                  uid: user.uid,
+                  email: user.email,
+                  isAdmin: false,
+                };
+              }
+            } else {
+              currentUser = null;
+              authError = null;
+            }
+            authLoading = false;
+            document.dispatchEvent(new CustomEvent('authStateChanged'));
+
+            if (!isAuthReady) {
+                isAuthReady = true;
+                resolveAuthReadyPromise();
+            }
+          });
+        },
+        authReady: () => authReadyPromise,
+        getCurrentUser: () => currentUser,
+        isLoading: () => authLoading,
+        getAuthError: () => authError,
+      };
+
+      // =============================================
+      // START: CART CONTEXT
+      // =============================================
+      const CartContext = (() => {
+          let cartItems = [];
+          const CART_STORAGE_KEY = 'russell_hq_cart';
+
+          const saveCart = () => {
+              localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cartItems));
+              document.dispatchEvent(new CustomEvent('cartStateChanged'));
+          };
+
+          return {
+              initialize: () => {
+                  const storedCart = localStorage.getItem(CART_STORAGE_KEY);
+                  if (storedCart) {
+                      cartItems = JSON.parse(storedCart);
+                  }
+                  document.dispatchEvent(new CustomEvent('cartStateChanged'));
+              },
+              getCartItems: () => cartItems,
+              getCartItemCount: () => {
+                  return cartItems.reduce((sum, item) => sum + item.quantity, 0);
+              },
+              addItemToCart: (itemToAdd) => {
+                  const existingItem = cartItems.find(item => item.id === itemToAdd.id);
+                  if (existingItem) {
+                      existingItem.quantity += 1;
+                  } else {
+                      cartItems.push({ ...itemToAdd, quantity: 1 });
+                  }
+                  saveCart();
+              },
+              removeItemFromCart: (itemId) => {
+                  cartItems = cartItems.filter(item => item.id !== itemId);
+                  saveCart();
+              },
+              clearCart: () => {
+                  cartItems = [];
+                  saveCart();
+              }
+          };
+      })();
+
+      // =============================================
+      // START: ICONS
+      // =============================================
+      const Icons = {
+        PushPin: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M16 3.5V2h-8v1.5a4.5 4.5 0 000 9V22l4-2 4 2V12.5a4.5 4.5 0 000-9z" stroke="black" stroke-width="1" stroke-linejoin="round"/></svg>`,
+        Tape: ({ className }) => `<svg class="${className}" viewBox="0 0 100 30" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M0 0 H100 V30 H0 Z" filter="url(#torn-edge)" /><defs><filter id="torn-edge" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.02 0.5" numOctaves="3" result="noise"/><feDisplacementMap in="SourceGraphic" in2="noise" scale="6" xChannelSelector="R" yChannelSelector="G"/></filter></defs></svg>`,
+        CoffeeStain: ({ className }) => `<svg class="${className}" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.5 50C85.5 70.4949 68.4949 87.5 48 87.5C27.5051 87.5 10.5 70.4949 10.5 50C10.5 29.5051 27.5051 12.5 48 12.5C68.4949 12.5 85.5 29.5051 85.5 50Z" stroke="currentColor" stroke-width="5"/><path d="M90 65C90 73.2843 83.2843 80 75 80C66.7157 80 60 73.2843 60 65C60 56.7157 66.7157 50 75 50C83.2843 50 90 56.7157 90 65Z" stroke="currentColor" stroke-width="4"/></svg>`,
+        TreasurePouch: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M8.5 3A1.5 1.5 0 0 1 10 1.5h4A1.5 1.5 0 0 1 15.5 3v.093c.488.22.844.667.938 1.196l1.2 6.602a2 2 0 0 1-1.948 2.373l-.962-.16a.5.5 0 0 0-.547.31L12.5 15.828a.5.5 0 0 1-.904 0l-1.18-2.424a.5.5 0 0 0-.547-.31l-.962.16a2 2 0 0 1-1.948-2.373l1.2-6.602C8.656 3.76 9.012 3.313 9.5 3.093V3h-1Z M10 4.5a.5.5 0 0 0-.5.5v.5h5V5a.5.5 0 0 0-.5-.5h-4Z M8 20.5a1.5 1.5 0 0 1 1.5-1.5h5a1.5 1.5 0 0 1 0 3h-5A1.5 1.5 0 0 1 8 20.5Z"/></svg>`,
+        ArrowRight: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg>`,
+        Scribble: ({ className }) => `<svg class="${className}" viewBox="0 0 200 50" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 25.5Q27 5.5 51.5 25.5T100.5 25.5T149.5 25.5T197.5 25.5" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>`,
+        Paperclip: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`,
+        Instagram: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>`,
+        Twitter: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 3a10.9 10.9 0 0 1-3.14 1.53 4.48 4.48 0 0 0-7.86 3v1A10.66 10.66 0 0 1 3 4s-4 9 5 13a11.64 11.64 0 0 1-7 2c9 5 20 0 20-11.5a4.5 4.5 0 0 0-.08-.83A7.72 7.72 0 0 0 23 3z"></path></svg>`,
+        Facebook: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"></path></svg>`,
+        Menu: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>`,
+        Lock: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`,
+        Pencil: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>`,
+        Trash: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
+        Upload: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`,
+        Spinner: ({ className }) => `<svg class="${className} animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`,
+        Tag: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>`,
+        DollarSign: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>`,
+        Grid: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`,
+        Home: ({ className }) => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>`,
+      };
+
+      // =============================================
+      // START: COMPONENTS
+      // =============================================
+      
+      const Footer = {
+        render: () => `
+          <footer class="bg-[#4a3c2f] bg-[url('https://www.transparenttextures.com/patterns/wood-planks.png')] text-yellow-100 py-8">
+            <div class="container mx-auto text-center font-patrick-hand">
+              <div class="flex justify-center space-x-6 mb-4">
+                <a href="#" class="hover:text-yellow-300 transition-colors">${Icons.Instagram({ className: "w-7 h-7" })}</a>
+                <a href="#" class="hover:text-yellow-300 transition-colors">${Icons.Twitter({ className: "w-7 h-7" })}</a>
+                <a href="#" class="hover:text-yellow-300 transition-colors">${Icons.Facebook({ className: "w-7 h-7" })}</a>
+              </div>
+              <p class="text-sm opacity-80">&copy; ${new Date().getFullYear()} Russell HQ Photography. All Rights Reserved.</p>
+              <p class="text-xs opacity-60 mt-2">Crafted in the wilderness.</p>
+            </div>
+          </footer>
+        `
+      };
+
+      const Header = (() => {
+          let isMenuOpen = false;
+          return {
+              render: () => {
+                  const cartItemCount = CartContext.getCartItemCount();
+                  const currentUser = AuthContext.getCurrentUser();
+                  const authError = AuthContext.getAuthError();
+
+                  const navItems = [
+                      { label: 'Home', page: { name: 'home' } }, { label: 'Collections', page: { name: 'collections' } },
+                      { label: 'About', page: { name: 'about' } }, { label: 'Contact', page: { name: 'contact' } },
+                  ];
+                  return `
+                      <header class="sticky top-0 z-50 bg-[#5c4736] bg-[url('https://www.transparenttextures.com/patterns/wood-planks.png')] shadow-lg shadow-black/30">
+                          <div class="container mx-auto flex justify-between items-center py-4 px-6">
+                              <button data-page='{"name": "home"}' class="nav-button font-special-elite text-3xl text-yellow-100 font-bold" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.7)">Russell HQ</button>
+                              <nav class="hidden md:flex items-center space-x-2">
+                                  ${navItems.map((item, index) => `<button data-page='${JSON.stringify(item.page)}' class="nav-button px-4 py-2 bg-[#6d543e] rounded-sm shadow-md text-yellow-50 font-patrick-hand text-lg hover:bg-[#7e624a] transition-transform duration-200 hover:-translate-y-0.5" style="transform: rotate(${index % 2 === 0 ? '-' : ''}${1 + index * 0.5}deg)">${item.label}</button>`).join('')}
+                                  ${currentUser?.isAdmin ? `<button data-page='{"name": "admin"}' class="nav-button px-4 py-2 bg-yellow-600 rounded-sm shadow-md text-black font-patrick-hand text-lg hover:bg-yellow-700 transition-transform duration-200 hover:-translate-y-0.5">Admin</button>` : ''}
+                              </nav>
+                              <div class="flex items-center space-x-4">
+                                  <button class="relative group nav-button" aria-label="Open shopping cart" data-page='{"name": "cart"}'><div class="relative">${Icons.TreasurePouch({ className: "w-12 h-12 text-yellow-200 group-hover:text-yellow-100 transition-colors" })} ${cartItemCount > 0 ? `<span class="absolute -top-1 -right-1 bg-red-600 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-bold">${cartItemCount}</span>` : ''}</div></button>
+                                  <div class="hidden md:flex items-center space-x-4">
+                                      ${currentUser ? `<button data-page='{"name": "dashboard"}' class="nav-button font-patrick-hand text-yellow-100 hover:text-white">Dashboard</button><button id="logout-button" class="font-patrick-hand text-yellow-100 hover:text-white">Logout</button>` : `<button data-page='{"name": "login"}' class="nav-button font-patrick-hand text-yellow-100 hover:text-white">Login</button>`}
+                                  </div>
+                                  <button id="mobile-menu-toggle" class="md:hidden text-yellow-100" aria-label="Toggle menu" aria-expanded="${isMenuOpen}">${Icons.Menu({ className: "w-8 h-8" })}</button>
+                              </div>
+                          </div>
+                          <div id="mobile-menu" class="${isMenuOpen ? '' : 'hidden'} md:hidden bg-[#6d543e] rounded-sm shadow-inner shadow-black/20">
+                              <nav class="flex flex-col items-center space-y-2 p-4">
+                                  ${navItems.map(item => `<button data-page='${JSON.stringify(item.page)}' class="nav-button px-4 py-2 text-yellow-50 font-patrick-hand text-lg w-full text-center hover:bg-[#7e624a] rounded-sm transition-colors">${item.label}</button>`).join('')}
+                                  ${currentUser?.isAdmin ? `<button data-page='{"name": "admin"}' class="nav-button px-4 py-2 text-black bg-yellow-600 font-patrick-hand text-lg w-full text-center hover:bg-yellow-700 rounded-sm transition-colors">Admin</button>` : ''}
+                                  ${currentUser ? `<button data-page='{"name": "dashboard"}' class="nav-button px-4 py-2 text-yellow-50 font-patrick-hand text-lg w-full text-center hover:bg-[#7e624a] rounded-sm transition-colors">Dashboard</button><button id="mobile-logout-button" class="px-4 py-2 text-yellow-50 font-patrick-hand text-lg w-full text-center hover:bg-[#7e624a] rounded-sm transition-colors">Logout</button>` : `<button data-page='{"name": "login"}' class="nav-button px-4 py-2 text-yellow-50 font-patrick-hand text-lg w-full text-center hover:bg-[#7e624a] rounded-sm transition-colors">Login</button>`}
+                              </nav>
+                          </div>
+                          ${authError ? `<div class="bg-yellow-200 text-yellow-900 text-center p-2 font-patrick-hand border-t-2 border-yellow-300"><strong>Warning:</strong> ${authError}</div>` : ''}
+                      </header>
+                  `;
+              },
+              attachListeners: (setPage) => {
+                  document.querySelectorAll('.nav-button').forEach(button => {
+                      button.addEventListener('click', () => {
+                          const pageData = button.getAttribute('data-page');
+                          if (pageData) {
+                              setPage(JSON.parse(pageData));
+                              isMenuOpen = false;
+                              document.getElementById('header-container').innerHTML = Header.render();
+                              Header.attachListeners(setPage);
+                          }
+                      });
+                  });
+                  const handleLogout = async () => { await signOut(auth); setPage({ name: 'home' }); };
+                  document.getElementById('logout-button')?.addEventListener('click', handleLogout);
+                  document.getElementById('mobile-logout-button')?.addEventListener('click', handleLogout);
+                  document.getElementById('mobile-menu-toggle')?.addEventListener('click', () => {
+                      isMenuOpen = !isMenuOpen;
+                      document.getElementById('header-container').innerHTML = Header.render();
+                      Header.attachListeners(setPage);
+                  });
+              }
+          };
+      })();
+
+      const PhotoCard = {
+        render: ({ photo, isTaped = false, isClickable = false }) => {
+          const tackColors = ['text-red-500', 'text-blue-500', 'text-green-500'];
+          const randomTackColor = tackColors[Math.floor(Math.random() * tackColors.length)];
+          return `
+          <button
+            ${isClickable ? `data-photo-id="${photo.id}"` : ''}
+            class="photo-card-button relative group transition-transform duration-300 ease-in-out hover:scale-105 hover:z-10 w-full disabled:cursor-default disabled:hover:scale-100"
+            style="transform: rotate(${photo.rotation}deg)"
+            aria-label="View details for ${photo.title}"
+            ${!isClickable ? 'disabled' : ''}
+          >
+            ${isTaped ? Icons.Tape({ className: "absolute -top-2 left-1/2 -translate-x-1/2 w-16 h-auto text-yellow-300 opacity-70 transform -rotate-3 z-10" }) : Icons.PushPin({ className: `absolute -top-1 left-1/2 -translate-x-1/2 w-6 h-6 ${randomTackColor} transform rotate-6 z-10` })}
+            <div class="bg-white p-2 rounded-sm shadow-2xl shadow-black/40">
+              <div class="bg-gray-200">
+                <img src="${photo.src}" alt="${photo.title}" class="w-full h-auto object-contain" style="max-height: 256px;" />
+              </div>
+            </div>
+          </button>
+        `
+        }
+      };
+
+      const PhotoDetailModal = (() => {
+        let currentPhoto = null;
+        let isDownloadable = false;
+        let selectedOption = null;
+        let allProducts = [];
+        let purchaseOptions = [];
+
+        const renderModalContent = () => {
+            purchaseOptions = [];
+            
+            // Add options from all available products (pricesheets)
+            allProducts.forEach(product => {
+                purchaseOptions.push({
+                    description: product.name,
+                    price: product.price
+                });
+            });
+
+            if (!selectedOption && purchaseOptions.length > 0) {
+                selectedOption = purchaseOptions[0];
+            }
+            
+            return `
+                <div class="relative torn-paper w-full max-w-4xl max-h-[90vh] overflow-y-auto transform-none" id="modal-inner-content">
+                    <button id="modal-close-button" class="absolute top-2 right-2 z-10 text-stone-600 hover:text-black text-4xl font-bold" aria-label="Close">&times;</button>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="bg-white shadow-lg p-2 pb-4"><img src="${currentPhoto.src}" alt="${currentPhoto.title}" class="w-full h-auto object-contain max-h-[75vh]" /></div>
+                        <div class="flex flex-col py-4">
+                            <h2 id="photo-title" class="font-kalam text-4xl font-bold mb-2 text-stone-800">${currentPhoto.title}</h2>
+                            <p class="font-caveat text-xl text-stone-700 leading-relaxed mb-6">${currentPhoto.description}</p>
+                            <div class="flex-grow">
+                                <h3 class="font-patrick-hand text-2xl text-stone-800 mb-3">Purchase Options</h3>
+                                ${purchaseOptions.length > 0 ? `
+                                <div class="space-y-2">
+                                    ${purchaseOptions.map(option => `<button data-description="${option.description}" class="option-button w-full text-left p-3 rounded-sm border-2 transition-colors ${selectedOption && selectedOption.description === option.description ? 'bg-stone-200 border-stone-500' : 'bg-transparent border-stone-300 hover:bg-stone-100'}"><span class="font-patrick-hand text-lg">${option.description}</span><span class="font-special-elite text-lg float-right">$${option.price.toFixed(2)}</span></button>`).join('')}
+                                </div>
+                                ` : `<p class="font-caveat text-xl text-stone-600">This item is not currently for sale.</p>`}
+                            </div>
+                            <div class="mt-6 flex flex-wrap gap-4">
+                                ${selectedOption ? `<button id="add-to-cart-button" class="font-patrick-hand text-lg bg-green-700 text-white px-6 py-3 rounded-sm shadow-lg hover:bg-green-800 transition-all transform hover:scale-105 flex-grow">Add to Pouch ($${selectedOption.price.toFixed(2)})</button>` : ''}
+                                ${isDownloadable ? `<a href="${currentPhoto.src}" download class="font-patrick-hand text-lg bg-blue-600 text-white px-6 py-3 rounded-sm shadow-lg hover:bg-blue-700 transition-all transform hover:scale-105 text-center flex-grow">Download Original (Free)</a>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+        const attachModalListeners = () => {
+            const modalContainer = document.getElementById('photo-modal');
+            const closeModal = () => {
+                if (modalContainer) document.body.removeChild(modalContainer);
+                document.removeEventListener('keydown', handleEscKey);
+                currentPhoto = null;
+                selectedOption = null;
+                allProducts = [];
+                purchaseOptions = [];
+            };
+            const handleEscKey = (event) => { if (event.key === 'Escape') closeModal(); };
+            
+            modalContainer?.addEventListener('click', closeModal);
+            document.getElementById('modal-close-button')?.addEventListener('click', closeModal);
+            document.getElementById('modal-inner-content')?.addEventListener('click', (e) => e.stopPropagation());
+            document.addEventListener('keydown', handleEscKey);
+
+            document.querySelectorAll('.option-button').forEach(button => {
+                button.addEventListener('click', () => {
+                    const description = button.dataset.description;
+                    const foundOption = purchaseOptions.find(opt => opt.description === description);
+                    if (foundOption) {
+                        selectedOption = foundOption;
+                        modalContainer.innerHTML = renderModalContent();
+                        attachModalListeners();
+                    }
+                });
+            });
+            const addToCartButton = document.getElementById('add-to-cart-button');
+            if (addToCartButton) {
+                addToCartButton.addEventListener('click', () => {
+                    const cartItem = { id: `${currentPhoto.id}-${selectedOption.description.replace(/\s+/g, '-')}`, photoId: currentPhoto.id, src: currentPhoto.src, title: currentPhoto.title, description: selectedOption.description, price: selectedOption.price };
+                    CartContext.addItemToCart(cartItem);
+                    addToCartButton.textContent = 'Added to Pouch!';
+                    addToCartButton.classList.add('bg-green-500');
+                    setTimeout(() => {
+                        if(selectedOption) { // check if user hasn't closed modal
+                           addToCartButton.textContent = `Add to Pouch ($${selectedOption.price.toFixed(2)})`;
+                           addToCartButton.classList.remove('bg-green-500');
+                        }
+                    }, 2000);
+                });
+            }
+        };
+
+        return {
+            show: (photo, downloadable, products) => {
+                currentPhoto = photo;
+                isDownloadable = downloadable;
+                allProducts = products || [];
+                selectedOption = null;
+                const modalContainer = document.createElement('div');
+                modalContainer.id = 'photo-modal';
+                modalContainer.className = 'fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm';
+                modalContainer.setAttribute('role', 'dialog');
+                document.body.appendChild(modalContainer);
+                modalContainer.innerHTML = renderModalContent();
+                attachModalListeners();
+            }
+        };
+      })();
+
+      // =============================================
+      // START: PAGE COMPONENTS
+      // =============================================
+      
+      const HomePage = {
+        render: async () => {
+          const mockPhotos = [
+            { id: '1', src: 'https://picsum.photos/seed/forest/800/600', title: 'Misty Pines', price: 45, rotation: -2 }, { id: '2', src: 'https://picsum.photos/seed/mountain/600/800', title: 'Summit View', price: 60, rotation: 1.5 },
+            { id: '3', src: 'https://picsum.photos/seed/ocean/800/600', title: 'Coastal Dreams', price: 50, rotation: -1 }, { id: '4', src: 'https://picsum.photos/seed/desert/600/800', title: 'Dune Shadows', price: 55, rotation: 2.5 },
+            { id: '5', src: 'https://picsum.photos/seed/river/800/600', title: 'Winding River', price: 40, rotation: -2.5 }, { id: '6', src: 'https://picsum.photos/seed/aurora/600/800', title: 'Northern Lights', price: 75, rotation: 1 },
+          ];
+          const photoCardsHTML = mockPhotos.map((photo, index) => PhotoCard.render({ photo, isTaped: index % 2 === 0, isClickable: false })).join('');
+          return `
+            <section class="my-16">
+              <div class="relative torn-paper transform -rotate-1 mx-auto max-w-4xl">
+                <div class="absolute top-4 right-4 transform rotate-12">${Icons.PushPin({ className: "w-8 h-8 text-red-600" })}</div>
+                <div class="flex flex-col md:flex-row items-center gap-8">
+                  <div class="w-full md:w-1/2">
+                    <h1 class="font-kalam text-5xl md:text-6xl font-bold text-stone-800 mb-4">Stories from the Wild.</h1>
+                    <p class="font-caveat text-2xl text-stone-600 mb-6">Every photograph is a memory, a moment captured from an adventure. Welcome to my travel journal.</p>
+                    <button id="hero-explore-button" class="font-patrick-hand text-xl bg-transparent border-2 border-[#6d543e] text-[#6d543e] px-6 py-2 rounded-md hover:bg-[#6d543e] hover:text-white transition-all duration-300 transform hover:scale-105 flex items-center gap-2">Explore Collections ${Icons.ArrowRight({ className: "w-5 h-5" })}</button>
+                  </div>
+                  <div class="w-full md:w-1/2 p-2 bg-white shadow-lg transform rotate-3 border-4 border-gray-100">
+                    <img src="https://picsum.photos/seed/hiker/600/400" alt="Adventurer" class="w-full h-auto" />
+                    <p class="text-center font-caveat text-lg mt-2 text-gray-700">The trail begins...</p>
+                  </div>
+                </div>
+                <div class="absolute -bottom-8 -left-8 transform -rotate-12">${Icons.CoffeeStain({ className: "w-24 h-24 text-amber-800 opacity-40" })}</div>
+              </div>
+            </section>
+            <section class="py-20 my-16">
+              <div class="text-center mb-12 relative">
+                  <h2 class="font-kalam text-6xl font-bold text-yellow-50 inline-block px-4" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.5)">Featured Photos</h2>
+                  <div class="absolute -top-4 left-1/2 -translate-x-1/2 transform -translate-x-24 -rotate-6">${Icons.Scribble({ className: "w-48 h-auto text-yellow-100 opacity-50" })}</div>
+                  <div class="absolute -bottom-4 left-1/2 -translate-x-1/2 transform translate-x-24 rotate-6 scale-x-[-1]">${Icons.Scribble({ className: "w-48 h-auto text-yellow-100 opacity-50 " })}</div>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-y-16 gap-x-8">${photoCardsHTML}</div>
+            </section>
+          `;
+        },
+        attachListeners: (id, setPage) => {
+          document.getElementById('hero-explore-button')?.addEventListener('click', () => setPage({ name: 'collections' }));
+        }
+      };
+      
+      const AboutPage = {
+        render: () => `
+          <section class="py-20 my-16">
+            <div class="relative torn-paper transform rotate-1 max-w-5xl mx-auto">
+              ${Icons.PushPin({ className: "absolute -top-3 -left-3 w-8 h-8 text-green-600" })}
+              <div class="flex flex-col lg:flex-row-reverse gap-8 items-center">
+                <div class="w-full lg:w-1/2 relative p-2 bg-white shadow-lg transform -rotate-2 border-4 border-gray-100">
+                  ${Icons.Tape({ className: "absolute -top-4 left-4 w-20 h-auto text-yellow-300 opacity-60 transform -rotate-12" })}
+                  ${Icons.Tape({ className: "absolute -bottom-4 right-4 w-20 h-auto text-yellow-300 opacity-60 transform rotate-12" })}
+                  <img src="https://picsum.photos/seed/russell/600/700" alt="Russell" class="w-full h-auto" />
+                  <p class="text-center font-caveat text-lg mt-2 text-gray-700">Just me and my camera.</p>
+                </div>
+                <div class="w-full lg:w-1/2">
+                  <h2 class="font-kalam text-5xl font-bold mb-4 text-stone-800">The Man Behind the Lens</h2>
+                  <div class="space-y-4 font-caveat text-2xl text-stone-700 leading-relaxed">
+                    <p>Hey, I'm Russell. For as long as I can remember, I've been drawn to the untamed corners of the world. My camera isn't just a tool; it's my travel companion, my way of journaling the incredible beauty I'm lucky enough to witness.</p>
+                    <p>This little corner of the internet is my scrapbook. It's a collection of sunrises over misty mountains, quiet moments in dense forests, and the vast, humbling expanse of the open road.</p>
+                    <p>I hope these photos bring a little piece of that adventure into your home. Thanks for stopping by.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        `,
+        attachListeners: () => {}
+      };
+
+      const ContactPage = {
+        render: () => {
+          const binderRings = [...Array(5)].map(() => `<div class="w-5 h-5 rounded-full bg-gray-300 ring-2 ring-gray-400"></div>`).join('');
+          return `
+            <section class="py-20 my-16 flex justify-center">
+              <div class="relative w-full max-w-2xl bg-white p-8 pt-12 shadow-2xl shadow-black/40 transform -rotate-1">
+                <div class="absolute top-0 left-8 right-8 h-8 bg-white z-10"><div class="flex justify-around items-center h-full">${binderRings}</div></div>
+                <div class="absolute top-0 left-12 bottom-0 w-px bg-red-400 opacity-70"></div>
+                <div class="absolute inset-0 bg-transparent" style="background-image: linear-gradient(to bottom, transparent 30px, #a8d4ff 30px, #a8d4ff 31px, transparent 31px); background-size: 100% 32px; background-position: 0 10px;"></div>
+                <div class="relative z-20">
+                  <h2 class="font-kalam text-5xl text-center mb-8 text-stone-800">Get In Touch!</h2>
+                  <form id="contact-form" class="space-y-6 font-special-elite text-xl text-gray-800">
+                    <div><label for="name" class="block -mb-8 ml-16">Name:</label><input type="text" id="name" class="w-full bg-transparent border-none focus:ring-0 pl-16 pt-2" required /></div>
+                    <div><label for="email" class="block -mb-8 ml-16">Email:</label><input type="email" id="email" class="w-full bg-transparent border-none focus:ring-0 pl-16 pt-2" required /></div>
+                    <div><label for="message" class="block ml-16">Message:</label><textarea id="message" rows="5" class="w-full bg-transparent border-none focus:ring-0 pl-16 resize-none leading-8" required></textarea></div>
+                    <div class="text-center pt-4"><button type="submit" class="relative font-patrick-hand text-xl bg-green-700 text-white px-8 py-3 rounded-sm shadow-lg hover:bg-green-800 transition-all transform hover:scale-105">Send Note ${Icons.Paperclip({ className: "absolute -top-3 -right-3 w-8 h-8 text-gray-400 transform rotate-12" })}</button></div>
+                  </form>
+                </div>
+              </div>
+            </section>
+          `;
+        },
+        attachListeners: () => {
+          const form = document.getElementById('contact-form');
+          form?.addEventListener('submit', (e) => { e.preventDefault(); alert('Message sent! (not really)'); form.reset(); });
+        }
+      };
+
+      const CollectionsPage = {
+        render: async () => {
+          try {
+              const currentUser = AuthContext.getCurrentUser();
+              let collectionsQuery;
+              if (currentUser) {
+                  collectionsQuery = collection(db, 'collections');
+              } else {
+                  collectionsQuery = query(collection(db, 'collections'), where("isPrivate", "==", false));
+              }
+              const querySnapshot = await getDocs(collectionsQuery);
+              const collections = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+              let content;
+              if (collections.length === 0) {
+                  content = `<div class="text-center text-yellow-50 font-patrick-hand text-2xl">No collections found. The admin needs to add some!</div>`;
+              } else {
+                  content = `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-y-16 gap-x-8">${collections.map(c => {
+                      const rotation = Math.random() * 4 - 2;
+                      return `<button data-collection-id="${c.id}" class="collection-card-button relative group transition-transform duration-300 ease-in-out hover:scale-105 hover:z-10 text-left w-full" style="transform: rotate(${rotation}deg)"><div class="bg-white p-3 pb-4 rounded-sm shadow-2xl shadow-black/40"><div class="bg-gray-200 relative"><img src="${c.coverImage}" alt="${c.name}" class="w-full h-64 object-cover" />${c.isPrivate ? `<div class="absolute top-2 right-2 bg-black/50 p-2 rounded-full">${Icons.Lock({ className: "w-5 h-5 text-white" })}</div>` : ''}</div><div class="mt-3 px-1"><h3 class="font-kalam text-3xl text-stone-800">${c.name}</h3><p class="font-patrick-hand text-stone-600">${c.description}</p></div></div></button>`
+                  }).join('')}</div>`;
+              }
+              return `<section class="py-16"><div class="text-center mb-12 relative"><h1 class="font-kalam text-6xl font-bold text-yellow-50 inline-block px-4" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.5)">My Collections</h1><p class="font-caveat text-2xl text-yellow-100 mt-2">Each collection is a different chapter of the adventure.</p><div class="absolute -top-4 left-1/2 -translate-x-1/2 transform -translate-x-32 -rotate-6">${Icons.Scribble({ className: "w-48 h-auto text-yellow-100 opacity-50" })}</div></div>${content}</section>`;
+          } catch (error) {
+              console.error("Error fetching collections: ", error);
+              return `<div class="text-center text-yellow-50 font-patrick-hand text-2xl">Could not load collections.</div>`;
+          }
+        },
+        attachListeners: (id, setPage) => {
+          document.querySelectorAll('.collection-card-button').forEach(button => {
+              button.addEventListener('click', () => {
+                  const collectionId = button.dataset.collectionId;
+                  if (collectionId) setPage({ name: 'collectionDetail', id: collectionId });
+              });
+          });
+        }
+      };
+
+      const CollectionDetailPage = (() => {
+        let collectionData = null;
+        let photos = [];
+        async function fetchCollectionData(collectionId) {
+            const docRef = doc(db, 'collections', collectionId);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                collectionData = { id: docSnap.id, ...docSnap.data() };
+                const photosSnapshot = await getDocs(firestoreCollection(db, 'collections', collectionId, 'photos'));
+                photos = photosSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            } else {
+                collectionData = null; photos = [];
+            }
+        }
+        return {
+          render: async (collectionId) => {
+              await fetchCollectionData(collectionId);
+              if (!collectionData) return `<div class="text-center py-20 text-yellow-50"><h2 class="font-kalam text-4xl">Collection Not Found</h2><button id="back-to-collections" class="font-patrick-hand text-xl mt-4 underline">Back to Collections</button></div>`;
+              const isAuthenticated = sessionStorage.getItem(`collection_${collectionId}_auth`) === 'true';
+              if (collectionData.isPrivate && !isAuthenticated) {
+                  return `<div class="py-20 flex justify-center"><div class="relative w-full max-w-md bg-white p-8 shadow-2xl shadow-black/40 transform -rotate-1 torn-paper"><h2 class="font-kalam text-3xl text-center mb-2 text-stone-800">Private Collection</h2><p class="font-caveat text-xl text-center mb-6">This gallery is password protected.</p><form id="password-form" class="space-y-4 font-special-elite"><div><label for="password">Password:</label><input type="password" id="password" class="w-full bg-transparent border-b-2 border-gray-400 focus:border-stone-800 focus:ring-0" /></div><p id="password-error" class="text-red-600 text-sm font-patrick-hand hidden"></p><div class="text-center pt-2"><button type="submit" class="font-patrick-hand text-lg bg-stone-700 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-stone-800">Unlock Gallery</button></div></form></div></div>`;
+              }
+              return `<section class="py-16"><button id="back-to-collections" class="font-patrick-hand text-lg text-yellow-100 hover:underline mb-8">&larr; Back to Collections</button><div class="text-center mb-12"><h1 class="font-kalam text-6xl font-bold text-yellow-50" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.5)">${collectionData.name}</h1><p class="font-caveat text-2xl text-yellow-100 mt-2">${collectionData.description}</p>${collectionData.isPrivate ? `<p class="mt-4 bg-green-200 text-green-800 font-bold p-2 rounded-md inline-block font-patrick-hand">High-Resolution Downloads Enabled</p>` : ''}</div><div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-y-12 gap-x-6">${photos.map((photo, index) => PhotoCard.render({ photo, isTaped: index % 2 === 0, isClickable: true })).join('')}</div></section>`;
+          },
+          attachListeners: (collectionId, setPage) => {
+              document.getElementById('back-to-collections')?.addEventListener('click', () => setPage({ name: 'collections' }));
+              document.getElementById('password-form')?.addEventListener('submit', async (e) => {
+                  e.preventDefault();
+                  const password = document.getElementById('password').value;
+                  if (collectionData && password === collectionData.password) {
+                      sessionStorage.setItem(`collection_${collectionId}_auth`, 'true');
+                      App.renderPage({ name: 'collectionDetail', id: collectionId });
+                  } else {
+                      const errorEl = document.getElementById('password-error');
+                      errorEl.textContent = 'Incorrect password.';
+                      errorEl.classList.remove('hidden');
+                  }
+              });
+              document.querySelectorAll('.photo-card-button').forEach(button => {
+                  button.addEventListener('click', async () => {
+                      const photoId = button.dataset.photoId;
+                      const selectedPhoto = photos.find(p => p.id === photoId);
+                      if (selectedPhoto) {
+                          const productsSnapshot = await getDocs(collection(db, 'pricesheets'));
+                          const products = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                          PhotoDetailModal.show(selectedPhoto, collectionData.isPrivate, products);
+                      }
+                  });
+              });
+          }
+        }
+      })();
+
+      const CartPage = {
+        render: () => {
+          const items = CartContext.getCartItems();
+          if (items.length === 0) return `<div class="text-center py-20 text-yellow-50">${Icons.TreasurePouch({ className: "w-24 h-24 mx-auto mb-4 opacity-50" })}<h1 class="font-kalam text-4xl mb-2">Your Pouch is Empty</h1><p class="font-caveat text-2xl mb-6">Time to find some treasure!</p><button id="explore-collections-button" class="font-patrick-hand text-xl bg-yellow-50 text-stone-800 px-6 py-2 rounded-md hover:bg-yellow-100 transition-all">Explore Collections</button></div>`;
+          const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+          return `<section class="py-16"><div class="relative torn-paper max-w-4xl mx-auto transform -rotate-1"><h1 class="font-kalam text-5xl text-center mb-8 text-stone-800">My Treasure</h1><div class="space-y-4">${items.map(item => `<div key="${item.id}" class="flex items-center justify-between border-b-2 border-dashed border-stone-300 pb-4"><div class="flex items-center gap-4"><img src="${item.src}" alt="${item.title}" class="w-20 h-20 object-cover rounded-sm" /><div><h2 class="font-kalam text-2xl">${item.title}</h2><p class="font-patrick-hand text-stone-600">${item.description}</p><p class="font-patrick-hand text-stone-600">$${item.price.toFixed(2)} x ${item.quantity}</p></div></div><div class="flex items-center gap-4"><p class="font-special-elite text-xl">$${(item.price * item.quantity).toFixed(2)}</p><button data-item-id="${item.id}" class="remove-item-button font-bold text-red-600 hover:text-red-800 text-2xl" aria-label="Remove ${item.title}">&times;</button></div></div>`).join('')}</div><div class="text-right mt-8"><p class="font-kalam text-3xl">Total: <span class="font-special-elite">$${total.toFixed(2)}</span></p><button id="checkout-button" class="mt-4 font-patrick-hand text-xl bg-green-700 text-white px-8 py-3 rounded-sm shadow-lg hover:bg-green-800">Checkout</button></div></div></section>`;
+        },
+        attachListeners: (id, setPage) => {
+            document.getElementById('explore-collections-button')?.addEventListener('click', () => setPage({ name: 'collections' }));
+            document.querySelectorAll('.remove-item-button').forEach(button => {
+                button.addEventListener('click', () => {
+                    CartContext.removeItemFromCart(button.dataset.itemId);
+                    App.renderPage({ name: 'cart' });
+                });
+            });
+            
+            const checkoutButton = document.getElementById('checkout-button');
+            if (checkoutButton) {
+                checkoutButton.addEventListener('click', async () => {
+                    checkoutButton.disabled = true;
+                    checkoutButton.innerHTML = `<span class="flex items-center justify-center">${Icons.Spinner({className: "w-5 h-5 mr-2"})} Redirecting...</span>`;
+
+                    const stripe = Stripe('pk_live_51Rwm2lIThHQRoK5vKtCScqxEKPuUkotJyzHc5uGYkn3b0ewkCsKjEbmMmLupyhSq9IvF9hS7EoXeRLG6qVhWd8K700y5BXMSce');
+                    const cloudFunctionUrl = '/createStripeCheckout';
+                    
+                    try {
+                        const response = await fetch(cloudFunctionUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ items: CartContext.getCartItems() })
+                        });
+
+                        if (!response.ok) {
+                           throw new Error(`Server responded with ${response.status}`);
+                        }
+
+                        const session = await response.json();
+                        
+                        const { error } = await stripe.redirectToCheckout({ sessionId: session.id });
+                        
+                        if (error) {
+                            console.error('Stripe redirectToCheckout error:', error);
+                            alert('Could not redirect to checkout. Please try again.');
+                            checkoutButton.disabled = false;
+                            checkoutButton.textContent = 'Checkout';
+                        } else {
+                            // On successful payment, clear the cart
+                            CartContext.clearCart();
+                        }
+
+                    } catch (error) {
+                        console.error('Error during checkout process:', error);
+                        alert('An error occurred during checkout. Please try again.');
+                        checkoutButton.disabled = false;
+                        checkoutButton.textContent = 'Checkout';
+                    }
+                });
+            }
+        }
+      };
+      
+      const AuthPage = (() => {
+        let isLogin = true;
+        return {
+          render: () => `<section class="py-20 my-16 flex justify-center"><div class="relative w-full max-w-md bg-white p-8 shadow-2xl shadow-black/40 transform -rotate-1 torn-paper"><h2 class="font-kalam text-4xl text-center mb-6 text-stone-800">${isLogin ? 'Member Login' : 'Create Account'}</h2><form id="auth-form" class="space-y-6 font-special-elite text-lg text-gray-800"><div><label for="email">Email:</label><input type="email" id="email" class="w-full bg-stone-100 border-2 border-stone-300 focus:border-stone-500 focus:ring-0 p-2 rounded-sm" required /></div><div><label for="password">Password:</label><input type="password" id="password" class="w-full bg-stone-100 border-2 border-stone-300 focus:border-stone-500 focus:ring-0 p-2 rounded-sm" required /></div><p id="auth-error" class="text-red-600 text-sm font-patrick-hand hidden"></p><div class="text-center pt-2"><button type="submit" id="submit-button" class="w-full font-patrick-hand text-xl bg-stone-700 text-white px-8 py-3 rounded-sm shadow-lg hover:bg-stone-800 disabled:bg-stone-400">${isLogin ? 'Sign In' : 'Sign Up'}</button></div></form><div class="text-center mt-6"><button id="toggle-auth-mode" class="font-patrick-hand text-stone-600 hover:underline">${isLogin ? 'Need an account? Sign Up' : 'Already have an account? Sign In'}</button></div></div></section>`,
+          attachListeners: (id, setPage) => {
+            document.getElementById('toggle-auth-mode').addEventListener('click', () => { isLogin = !isLogin; App.renderPage({ name: 'login' }); });
+            document.getElementById('auth-form').addEventListener('submit', async (e) => {
+              e.preventDefault();
+              const submitButton = document.getElementById('submit-button');
+              const errorElement = document.getElementById('auth-error');
+              submitButton.disabled = true;
+              submitButton.textContent = 'Processing...';
+              errorElement.classList.add('hidden');
+              const email = document.getElementById('email').value;
+              const password = document.getElementById('password').value;
+              try {
+                let userCredential;
+                if (isLogin) {
+                  userCredential = await signInWithEmailAndPassword(auth, email, password);
+                } else {
+                  userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                  await setDoc(doc(db, "users", userCredential.user.uid), { email: userCredential.user.email, isAdmin: false, createdAt: serverTimestamp() });
+                }
+                
+                // Manually check admin status after login/signup before redirecting
+                const userDocRef = doc(db, 'users', userCredential.user.uid);
+                const userDoc = await getDoc(userDocRef);
+                if (userDoc.exists() && userDoc.data().isAdmin === true) {
+                    setPage({ name: 'admin' });
+                } else {
+                    setPage({ name: 'dashboard' });
+                }
+
+              } catch (err) {
+                errorElement.textContent = err.message;
+                errorElement.classList.remove('hidden');
+                submitButton.disabled = false;
+                submitButton.textContent = isLogin ? 'Sign In' : 'Sign Up';
+              }
+            });
+          }
+        };
+      })();
+
+      const DashboardPage = {
+          render: () => {
+              const currentUser = AuthContext.getCurrentUser();
+              if (!currentUser) return `<div class="text-center py-20 text-yellow-50"><h2 class="font-kalam text-4xl">You are not logged in.</h2><button id="go-to-login" class="font-patrick-hand text-xl mt-4 underline">Go to Login</button></div>`;
+              return `<section class="py-16"><div class="relative torn-paper max-w-3xl mx-auto transform rotate-1 text-center">${Icons.PushPin({ className: "absolute -top-3 left-1/2 -translate-x-1/2 w-8 h-8 text-green-600"})} <h1 class="font-kalam text-5xl font-bold text-stone-800">${currentUser.isAdmin ? 'Admin Dashboard' : 'Welcome Back!'}</h1><p class="font-caveat text-2xl mt-2 text-stone-700">Logged in as: <span class="font-special-elite">${currentUser.email}</span></p><div class="mt-8 border-t-2 border-dashed border-stone-300 pt-8">${currentUser.isAdmin ? `<div><p class="font-patrick-hand text-xl text-stone-800 mb-6">You have administrative privileges. Manage your site content from here.</p><div class="flex flex-col sm:flex-row justify-center gap-4"><button data-page='{"name": "admin"}' class="dashboard-nav-button font-patrick-hand text-xl bg-yellow-600 text-black px-8 py-3 rounded-sm shadow-lg hover:bg-yellow-700">Manage Collections</button><button data-page='{"name": "home"}' class="dashboard-nav-button font-patrick-hand text-xl bg-stone-700 text-white px-8 py-3 rounded-sm shadow-lg hover:bg-stone-800">View Live Site</button></div></div>` : `<div><p class="font-patrick-hand text-xl text-stone-800 mb-6">Ready for the next adventure? Explore the latest collections or manage your account.</p><button data-page='{"name": "collections"}' class="dashboard-nav-button font-patrick-hand text-xl bg-stone-700 text-white px-8 py-3 rounded-sm shadow-lg hover:bg-stone-800">Explore Collections</button></div>`}</div><div class="mt-12"><button id="dashboard-logout" class="font-patrick-hand text-stone-500 hover:underline">Logout</button></div></div></section>`;
+          },
+          attachListeners: (id, setPage) => {
+              document.getElementById('go-to-login')?.addEventListener('click', () => setPage({ name: 'login' }));
+              document.querySelectorAll('.dashboard-nav-button').forEach(button => { button.addEventListener('click', () => { const pageData = button.getAttribute('data-page'); if (pageData) setPage(JSON.parse(pageData)); }); });
+              document.getElementById('dashboard-logout')?.addEventListener('click', async () => { await signOut(auth); setPage({ name: 'home' }); });
+          }
+      };
+
+      const AdminPage = (() => {
+          // Module-level state
+          let activeTab = 'dashboard';
+          let collections = [], pricesheets = [], discounts = [];
+          let currentCollection = null, currentPricesheet = null, currentDiscount = null;
+          
+          // Fetch functions
+          const fetchData = async (collectionName) => {
+              const querySnapshot = await getDocs(collection(db, collectionName));
+              return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          };
+
+          // Render functions for each tab
+          const renderDashboardTab = () => `
+              <div class="torn-paper">
+                  <h2 class="font-kalam text-4xl text-stone-800 mb-4">Dashboard</h2>
+                  <p class="font-patrick-hand text-xl text-stone-600 mb-6">Welcome to the admin area. Here's a quick overview of your store.</p>
+                  <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                      <div class="bg-stone-100 p-6 rounded-md shadow-sm"><p class="font-kalam text-5xl font-bold">${collections.length}</p><p class="font-patrick-hand text-lg text-stone-600">Collections</p></div>
+                      <div class="bg-stone-100 p-6 rounded-md shadow-sm"><p class="font-kalam text-5xl font-bold">${pricesheets.length}</p><p class="font-patrick-hand text-lg text-stone-600">Products</p></div>
+                      <div class="bg-stone-100 p-6 rounded-md shadow-sm"><p class="font-kalam text-5xl font-bold">${discounts.length}</p><p class="font-patrick-hand text-lg text-stone-600">Discounts</p></div>
+                  </div>
+              </div>
+          `;
+
+          const renderCollectionsTab = () => `
+              <div class="torn-paper mb-12">
+                  <h2 class="font-kalam text-4xl mb-6 text-stone-800">${currentCollection ? 'Edit Collection' : 'Add New Collection'}</h2>
+                  <form id="collection-form" class="space-y-4 font-patrick-hand text-lg">
+                      <div><label for="name" class="block text-stone-700">Name</label><input type="text" id="name" value="${currentCollection?.name || ''}" required class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm" /></div>
+                      <div><label for="description" class="block text-stone-700">Description</label><textarea id="description" rows="3" class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm">${currentCollection?.description || ''}</textarea></div>
+                      <div><label for="coverImage" class="block text-stone-700">Cover Image</label><input type="file" id="coverImage" class="w-full text-stone-600 file:mr-4 file:py-2 file:px-4 file:rounded-sm file:border-0 file:bg-stone-200 file:text-stone-700 hover:file:bg-stone-300" />${currentCollection?.coverImage ? `<img src="${currentCollection.coverImage}" alt="Current cover" class="w-24 h-24 object-cover mt-2 rounded-sm" />` : ''}</div>
+                      <div class="flex items-center gap-4"><input type="checkbox" id="isPrivate" ${currentCollection?.isPrivate ? 'checked' : ''} class="h-5 w-5 rounded-sm" /><label for="isPrivate">Private Collection?</label></div>
+                      <div id="password-field" class="${currentCollection?.isPrivate ? '' : 'hidden'}"><label for="password">Password</label><input type="text" id="password" value="${currentCollection?.password || ''}" class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm" /></div>
+                      <div class="flex gap-4 items-center"><button type="submit" id="save-collection-button" class="bg-green-700 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-green-800 disabled:bg-gray-400 flex items-center gap-2">Save Collection</button>${currentCollection ? '<button type="button" id="cancel-edit-button" class="bg-stone-500 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-stone-600">Cancel Edit</button>' : ''}</div>
+                  </form>
+              </div>
+              <div class="torn-paper"><h2 class="font-kalam text-4xl mb-6 text-stone-800">Existing Collections</h2><div id="collections-list" class="space-y-4">${collections.map(col => `<div class="bg-stone-100 p-4 rounded-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4"><div><h3 class="font-kalam text-2xl">${col.name} ${col.isPrivate ? Icons.Lock({className: "w-4 h-4 inline-block ml-2"}) : ''}</h3></div><div class="flex gap-2 flex-shrink-0"><button data-id="${col.id}" class="manage-photos-button bg-blue-600 text-white px-3 py-2 text-sm rounded-sm hover:bg-blue-700 font-patrick-hand">Manage Photos</button><button data-id='${JSON.stringify(col)}' class="edit-collection-button bg-yellow-500 text-black p-2 rounded-sm hover:bg-yellow-600">${Icons.Pencil({className: "w-5 h-5"})}</button><button data-id="${col.id}" data-name="${col.name}" class="delete-collection-button bg-red-600 text-white p-2 rounded-sm hover:bg-red-700">${Icons.Trash({className: "w-5 h-5"})}</button></div></div>`).join('')}</div></div>
+          `;
+          
+          const renderProductsTab = () => `
+              <div class="torn-paper mb-12">
+                  <h2 class="font-kalam text-4xl mb-6 text-stone-800">${currentPricesheet ? 'Edit Product' : 'Add New Product'}</h2>
+                  <form id="pricesheet-form" class="space-y-4 font-patrick-hand text-lg">
+                      <div><label for="pricesheet-name" class="block text-stone-700">Product Name (e.g., 8x10 Print)</label><input type="text" id="pricesheet-name" value="${currentPricesheet?.name || ''}" required class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm" /></div>
+                      <div><label for="pricesheet-price" class="block text-stone-700">Price</label><input type="number" step="0.01" id="pricesheet-price" value="${currentPricesheet?.price || ''}" required class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm" /></div>
+                      <div class="flex gap-4 items-center"><button type="submit" id="save-pricesheet-button" class="bg-green-700 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-green-800">Save Product</button>${currentPricesheet ? `<button type="button" id="cancel-pricesheet-edit-button" class="bg-stone-500 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-stone-600">Cancel</button>` : ''}</div>
+                  </form>
+              </div>
+              <div class="torn-paper"><h2 class="font-kalam text-4xl mb-6 text-stone-800">Existing Products</h2><div class="space-y-4">${pricesheets.map(ps => `<div class="bg-stone-100 p-4 rounded-sm flex justify-between items-center"><div><h3 class="font-kalam text-2xl">${ps.name}</h3><p class="text-sm text-stone-600">$${ps.price ? ps.price.toFixed(2) : '0.00'}</p></div><div class="flex gap-2"><button data-id='${JSON.stringify(ps)}' class="edit-pricesheet-button bg-yellow-500 text-black p-2 rounded-sm hover:bg-yellow-600">${Icons.Pencil({className: "w-5 h-5"})}</button><button data-id="${ps.id}" data-name="${ps.name}" class="delete-pricesheet-button bg-red-600 text-white p-2 rounded-sm hover:bg-red-700">${Icons.Trash({className: "w-5 h-5"})}</button></div></div>`).join('')}</div></div>
+          `;
+
+          const renderDiscountsTab = () => `
+              <div class="torn-paper mb-12">
+                  <h2 class="font-kalam text-4xl mb-6 text-stone-800">${currentDiscount ? 'Edit Discount' : 'Add New Discount'}</h2>
+                  <form id="discount-form" class="space-y-4 font-patrick-hand text-lg">
+                      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div><label for="discount-code">Discount Code</label><input type="text" id="discount-code" value="${currentDiscount?.code || ''}" required class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm uppercase" /></div>
+                          <div><label for="discount-type">Type</label><select id="discount-type" class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm"><option value="percentage" ${currentDiscount?.type === 'percentage' ? 'selected' : ''}>Percentage</option><option value="fixed" ${currentDiscount?.type === 'fixed' ? 'selected' : ''}>Fixed Amount</option></select></div>
+                          <div><label for="discount-value">Value</label><input type="number" step="0.01" id="discount-value" value="${currentDiscount?.value || ''}" required class="w-full bg-stone-50 border-2 border-stone-300 p-2 rounded-sm" /></div>
+                      </div>
+                      <div class="flex items-center gap-4"><input type="checkbox" id="discount-active" ${currentDiscount?.isActive ?? true ? 'checked' : ''} class="h-5 w-5 rounded-sm" /><label for="discount-active">Active?</label></div>
+                      <div class="flex gap-4 items-center"><button type="submit" class="bg-green-700 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-green-800">Save Discount</button>${currentDiscount ? `<button type="button" id="cancel-discount-edit-button" class="bg-stone-500 text-white px-6 py-2 rounded-sm shadow-lg hover:bg-stone-600">Cancel</button>`: ''}</div>
+                  </form>
+              </div>
+              <div class="torn-paper"><h2 class="font-kalam text-4xl mb-6 text-stone-800">Existing Discounts</h2><div class="space-y-4">${discounts.map(d => `<div class="bg-stone-100 p-4 rounded-sm flex justify-between items-center"><div><h3 class="font-kalam text-2xl">${d.code}</h3><p class="text-sm text-stone-600">${d.type === 'percentage' ? `${d.value}% off` : `$${d.value} off`} - <span class="${d.isActive ? 'text-green-600' : 'text-red-600'}">${d.isActive ? 'Active' : 'Inactive'}</span></p></div><div class="flex gap-2"><button data-id='${JSON.stringify(d)}' class="edit-discount-button bg-yellow-500 text-black p-2 rounded-sm hover:bg-yellow-600">${Icons.Pencil({className: "w-5 h-5"})}</button><button data-id="${d.id}" data-name="${d.code}" class="delete-discount-button bg-red-600 text-white p-2 rounded-sm hover:bg-red-700">${Icons.Trash({className: "w-5 h-5"})}</button></div></div>`).join('')}</div></div>
+          `;
+          
+          // Main render and listeners
+          return {
+            render: async () => {
+                [collections, pricesheets, discounts] = await Promise.all([
+                    fetchData('collections'),
+                    fetchData('pricesheets'),
+                    fetchData('discounts')
+                ]);
+                
+                const tabs = [
+                    { id: 'dashboard', name: 'Dashboard', icon: Icons.Home },
+                    { id: 'collections', name: 'Collections', icon: Icons.Grid },
+                    { id: 'products', name: 'Products', icon: Icons.DollarSign },
+                    { id: 'discounts', name: 'Discounts', icon: Icons.Tag }
+                ];
+
+                let currentTabContent;
+                if (activeTab === 'dashboard') currentTabContent = renderDashboardTab();
+                else if (activeTab === 'collections') currentTabContent = renderCollectionsTab();
+                else if (activeTab === 'products') currentTabContent = renderProductsTab();
+                else if (activeTab === 'discounts') currentTabContent = renderDiscountsTab();
+
+                return `
+                    <section class="py-16">
+                        <div class="text-center mb-12"><h1 class="font-kalam text-6xl font-bold text-yellow-50" style="text-shadow: 2px 2px 4px rgba(0,0,0,0.5)">Admin Panel</h1></div>
+                        <div class="max-w-7xl mx-auto flex flex-col md:flex-row gap-8">
+                            <aside class="md:w-1/4">
+                                <div class="torn-paper p-4">
+                                    <nav class="flex flex-col space-y-2 font-patrick-hand text-xl">
+                                        ${tabs.map(tab => `<button data-tab="${tab.id}" class="admin-tab-button flex items-center gap-3 p-3 rounded-md transition-colors ${activeTab === tab.id ? 'bg-stone-800 text-white' : 'hover:bg-stone-200'}">${tab.icon({className: "w-6 h-6"})} ${tab.name}</button>`).join('')}
+                                    </nav>
+                                </div>
+                            </aside>
+                            <main class="md:w-3/4" id="admin-tab-content">${currentTabContent}</main>
+                        </div>
+                    </section>
+                `;
+            },
+            attachListeners: (id, setPage) => {
+                // Tab switching
+                document.querySelectorAll('.admin-tab-button').forEach(button => {
+                    button.addEventListener('click', async () => {
+                        activeTab = button.dataset.tab;
+                        document.getElementById('main-content').innerHTML = await AdminPage.render();
+                        AdminPage.attachListeners(id, setPage);
+                    });
+                });
+
+                // Attach listeners based on active tab
+                if (activeTab === 'collections') {
+                    // Collection form logic
+                    document.getElementById('collection-form')?.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const name = document.getElementById('name').value, description = document.getElementById('description').value, isPrivate = document.getElementById('isPrivate').checked, password = document.getElementById('password').value, coverImageFile = document.getElementById('coverImage').files?.[0];
+                        let finalCoverImageUrl = currentCollection?.coverImage || '';
+                        if (coverImageFile) {
+                            if (currentCollection?.coverImage) {
+                                try {
+                                    const oldRef = ref(storage, currentCollection.coverImage);
+                                    await deleteObject(oldRef);
+                                } catch (error) {
+                                    console.warn("Could not delete old cover image, it might not exist:", error);
+                                }
+                            }
+                            const storageRef = ref(storage, `covers/${Date.now()}_${coverImageFile.name}`);
+                            const uploadTask = uploadBytesResumable(storageRef, coverImageFile);
+                            finalCoverImageUrl = await new Promise((resolve, reject) => { uploadTask.on('state_changed', null, (error) => reject(error), async () => resolve(await getDownloadURL(uploadTask.snapshot.ref))) });
+                        }
+                        const collectionData = { name, description, isPrivate, password: isPrivate ? password : '', coverImage: finalCoverImageUrl, updatedAt: serverTimestamp() };
+                        if (currentCollection?.id) await setDoc(doc(db, 'collections', currentCollection.id), collectionData, { merge: true }); else await addDoc(collection(db, 'collections'), {...collectionData, createdAt: serverTimestamp()});
+                        currentCollection = null;
+                        document.getElementById('main-content').innerHTML = await AdminPage.render();
+                        AdminPage.attachListeners(id, setPage);
+                    });
+                    document.getElementById('isPrivate')?.addEventListener('change', (e) => document.getElementById('password-field').classList.toggle('hidden', !e.target.checked));
+                    document.getElementById('cancel-edit-button')?.addEventListener('click', async () => { currentCollection = null; document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); });
+                    document.querySelectorAll('.edit-collection-button').forEach(button => button.addEventListener('click', async () => { currentCollection = JSON.parse(button.dataset.id); document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+                    document.querySelectorAll('.manage-photos-button').forEach(button => button.addEventListener('click', () => setPage({ name: 'adminCollectionDetail', id: button.dataset.id })));
+                    document.querySelectorAll('.delete-collection-button').forEach(button => button.addEventListener('click', async () => { if (window.confirm(`Delete "${button.dataset.name}"?`)) { await deleteDoc(doc(db, 'collections', button.dataset.id)); document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); }}));
+                } else if (activeTab === 'products') {
+                    // Pricesheet form logic
+                    document.getElementById('pricesheet-form')?.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const saveButton = document.getElementById('save-pricesheet-button');
+                        saveButton.disabled = true;
+                        saveButton.textContent = 'Saving...';
+                        const name = document.getElementById('pricesheet-name').value;
+                        const price = parseFloat(document.getElementById('pricesheet-price').value);
+                        const pricesheetData = { name, price };
+                        if (currentPricesheet?.id) {
+                            await setDoc(doc(db, 'pricesheets', currentPricesheet.id), pricesheetData);
+                        } else {
+                            await addDoc(collection(db, 'pricesheets'), pricesheetData);
+                        }
+                        currentPricesheet = null;
+                        document.getElementById('main-content').innerHTML = await AdminPage.render();
+                        AdminPage.attachListeners(id, setPage);
+                    });
+                    document.getElementById('cancel-pricesheet-edit-button')?.addEventListener('click', async () => { currentPricesheet = null; document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); });
+                    document.querySelectorAll('.edit-pricesheet-button').forEach(button => button.addEventListener('click', async () => { currentPricesheet = JSON.parse(button.dataset.id); document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+                    document.querySelectorAll('.delete-pricesheet-button').forEach(button => button.addEventListener('click', async () => { 
+                        if (window.confirm(`Delete "${button.dataset.name}"?`)) {
+                            await deleteDoc(doc(db, 'pricesheets', button.dataset.id)); 
+                            document.getElementById('main-content').innerHTML = await AdminPage.render(); 
+                            AdminPage.attachListeners(id, setPage); 
+                        }
+                    }));
+                } else if (activeTab === 'discounts') {
+                    // Discount form logic
+                    document.getElementById('discount-form')?.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const discountData = { code: document.getElementById('discount-code').value.toUpperCase(), type: document.getElementById('discount-type').value, value: parseFloat(document.getElementById('discount-value').value), isActive: document.getElementById('discount-active').checked };
+                        if (currentDiscount?.id) await setDoc(doc(db, 'discounts', currentDiscount.id), discountData); else await addDoc(collection(db, 'discounts'), discountData);
+                        currentDiscount = null;
+                        document.getElementById('main-content').innerHTML = await AdminPage.render();
+                        AdminPage.attachListeners(id, setPage);
+                    });
+                    document.getElementById('cancel-discount-edit-button')?.addEventListener('click', async () => { currentDiscount = null; document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); });
+                    document.querySelectorAll('.edit-discount-button').forEach(button => button.addEventListener('click', async () => { currentDiscount = JSON.parse(button.dataset.id); document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+                    document.querySelectorAll('.delete-discount-button').forEach(button => button.addEventListener('click', async () => { if (window.confirm(`Delete "${button.dataset.name}"?`)) { await deleteDoc(doc(db, 'discounts', button.dataset.id)); document.getElementById('main-content').innerHTML = await AdminPage.render(); AdminPage.attachListeners(id, setPage); }}));
+                }
+            }
+          };
+      })();
+
+      const AdminCollectionDetailPage = (() => {
+        let collection = null;
+        let photos = [];
+        async function fetchCollectionData(collectionId) {
+            const docRef = doc(db, 'collections', collectionId);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                collection = { id: docSnap.id, ...docSnap.data() };
+                const photosSnapshot = await getDocs(firestoreCollection(db, 'collections', collectionId, 'photos'));
+                photos = photosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            } else { collection = null; photos = []; }
+        }
+        function renderUploadProgress(uploadingFiles) {
+            const container = document.getElementById('upload-progress-container');
+            if (!container || uploadingFiles.length === 0) { if(container) container.innerHTML = ''; return; }
+            container.innerHTML = uploadingFiles.map(f => `<div><p class="text-sm font-patrick-hand truncate">${f.name}</p><div class="w-full bg-gray-200 rounded-full h-2.5"><div class="bg-blue-600 h-2.5 rounded-full" style="width: ${f.progress}%"></div></div>${f.error ? `<p class="text-red-500 text-sm">${f.error}</p>` : ''}</div>`).join('');
+        }
+        function renderPhotos(collectionId, setPage) {
+            const container = document.getElementById('photos-list-container');
+            if (!container) return;
+            if (photos.length === 0) { container.innerHTML = `<p class="text-center font-patrick-hand text-lg text-stone-500 py-8 col-span-full">No photos uploaded yet.</p>`; return; }
+            container.innerHTML = photos.map(photo => `<div key="${photo.id}" class="relative group"><img src="${photo.src}" alt="${photo.title}" class="w-full h-48 object-cover rounded-md" /><div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2"><button data-id="${photo.id}" class="delete-photo-button bg-red-600 text-white p-3 rounded-full hover:bg-red-700">${Icons.Trash({className: "w-5 h-5"})}</button></div><p class="font-patrick-hand text-center mt-1 truncate">${photo.title}</p></div>`).join('');
+            attachDeleteListeners(collectionId, setPage);
+        }
+        function attachDeleteListeners(collectionId, setPage) {
+            document.querySelectorAll('.delete-photo-button').forEach(button => {
+                const newButton = button.cloneNode(true);
+                button.parentNode.replaceChild(newButton, button);
+                newButton.addEventListener('click', async () => {
+                    const photoId = newButton.dataset.id, photo = photos.find(p => p.id === photoId);
+                    if (window.confirm(`Delete photo "${photo.title}"?`)) { await deleteObject(ref(storage, photo.src)); await deleteDoc(doc(db, 'collections', collectionId, 'photos', photoId)); await fetchCollectionData(collectionId); renderPhotos(collectionId, setPage); }
+                });
+            });
+        }
+        return {
+          render: async (collectionId) => { await fetchCollectionData(collectionId); if (!collection) return ``; return `<section class="py-16"><button id="back-to-admin" class="font-patrick-hand text-lg text-yellow-100 hover:underline mb-8">&larr; Back to All Collections</button><div class="text-center mb-12"><h1 class="font-kalam text-5xl font-bold text-yellow-50">${collection?.name}</h1><p class="font-caveat text-2xl text-yellow-100">Manage Photos</p></div><div class="relative torn-paper max-w-4xl mx-auto mb-16"><h2 class="font-kalam text-4xl mb-6 text-stone-800">Upload New Photos</h2><div id="drop-zone" class="border-4 border-dashed border-stone-300 rounded-lg p-8 text-center bg-stone-50 cursor-pointer hover:bg-stone-100 hover:border-stone-400"><input type="file" multiple class="hidden" id="file-upload" /><label for="file-upload" class="font-patrick-hand text-xl text-stone-600 cursor-pointer">${Icons.Upload({ className: "w-12 h-12 mx-auto mb-4 text-stone-400"})}Drag & drop files here, or click to select files.</label></div><div id="upload-progress-container" class="mt-4 space-y-2"></div></div><div class="relative torn-paper max-w-6xl mx-auto"><h2 class="font-kalam text-4xl mb-6 text-stone-800">Existing Photos</h2><div id="photos-list-container" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4"></div></div></section>` },
+          attachListeners: (collectionId, setPage) => {
+              document.getElementById('back-to-admin').addEventListener('click', () => setPage({ name: 'admin' }));
+              const handleFileUpload = (files) => {
+                  if (!files) return;
+                  let uploadingFiles = [];
+                  Array.from(files).forEach(file => {
+                      const uploadEntry = { file, progress: 0, name: file.name, error: null };
+                      uploadingFiles.push(uploadEntry);
+                      const storageRef = ref(storage, `collections/${collectionId}/${Date.now()}_${file.name}`);
+                      const uploadTask = uploadBytesResumable(storageRef, file);
+                      uploadTask.on('state_changed', (snapshot) => { uploadEntry.progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100; renderUploadProgress(uploadingFiles); },
+                          (error) => { uploadEntry.error = error.message; renderUploadProgress(uploadingFiles); },
+                          async () => {
+                              const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                              await addDoc(firestoreCollection(db, 'collections', collectionId, 'photos'), { src: downloadURL, title: file.name.split('.').slice(0, -1).join('.'), description: '', price: 0, rotation: Math.random() * 6 - 3, });
+                              uploadingFiles = uploadingFiles.filter(f => f.file !== file);
+                              renderUploadProgress(uploadingFiles);
+                              await fetchCollectionData(collectionId);
+                              renderPhotos(collectionId, setPage);
+                          });
+                  });
+                  renderUploadProgress(uploadingFiles);
+              };
+              const dropZone = document.getElementById('drop-zone');
+              dropZone.addEventListener('dragover', (e) => e.preventDefault());
+              dropZone.addEventListener('drop', (e) => { e.preventDefault(); handleFileUpload(e.dataTransfer?.files); });
+              document.getElementById('file-upload').addEventListener('change', (e) => handleFileUpload(e.target.files));
+              renderPhotos(collectionId, setPage);
+          }
+        };
+      })();
+
+
+      // =============================================
+      // START: MAIN APP LOGIC
+      // =============================================
+      const App = (() => {
+        const pageRenderers = {
+          home: HomePage,
+          collections: CollectionsPage,
+          collectionDetail: CollectionDetailPage,
+          about: AboutPage,
+          contact: ContactPage,
+          cart: CartPage,
+          login: AuthPage,
+          dashboard: DashboardPage,
+          admin: AdminPage,
+          adminCollectionDetail: AdminCollectionDetailPage,
+        };
+
+        const setPage = (page) => {
+          App.renderPage(page);
+        };
+
+        return {
+          renderPage: async (page) => {
+            const mainContainer = document.getElementById('main-content');
+            if (!mainContainer) return;
+
+            mainContainer.innerHTML = `<div class="text-center py-20 text-yellow-50 text-xl">Loading...</div>`;
+            const currentUser = AuthContext.getCurrentUser();
+            let pageName = page.name || 'home';
+
+            // Route protection
+            if (pageName === 'dashboard' && !currentUser) pageName = 'login';
+            if ((pageName === 'admin' || pageName === 'adminCollectionDetail') && !currentUser?.isAdmin) pageName = 'home';
+            
+            const renderer = pageRenderers[pageName] || pageRenderers.home;
+            mainContainer.innerHTML = await renderer.render(page.id, setPage);
+            renderer.attachListeners(page.id, setPage);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          },
+
+          initialize: async () => {
+            const rootElement = document.getElementById('app-root');
+            AuthContext.initialize();
+            CartContext.initialize();
+
+            rootElement.innerHTML = `
+              <div id="header-container"></div>
+              <main id="main-content" class="container mx-auto px-4 py-8 min-h-[calc(100vh-250px)]"></main>
+              <div id="footer-container"></div>
+            `;
+            
+            const headerContainer = document.getElementById('header-container');
+            const footerContainer = document.getElementById('footer-container');
+            
+            const updateHeader = () => {
+              headerContainer.innerHTML = Header.render();
+              Header.attachListeners(setPage);
+            };
+            
+            await AuthContext.authReady();
+            
+            updateHeader();
+            footerContainer.innerHTML = Footer.render();
+            
+            document.addEventListener('authStateChanged', updateHeader);
+            document.addEventListener('cartStateChanged', updateHeader);
+
+            App.renderPage({ name: 'home' });
+          }
+        };
+      })();
+
+      // Kick off the application
+      App.initialize();
+
+    </script>
+</body>
+</html>

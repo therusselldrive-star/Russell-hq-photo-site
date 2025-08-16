@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "public": "public",
+    "public": "dist",
     "ignore": [
       "firebase.json",
       "**/.*",
@@ -14,10 +14,7 @@
     ]
   },
   "functions": {
-    "source": "functions",
-    "runtime": "nodejs20",
-    "predeploy": [
-      "npm --prefix \"$RESOURCE_DIR\" install"
-    ]
+    "source": ".",
+    "runtime": "nodejs20"
   }
 }

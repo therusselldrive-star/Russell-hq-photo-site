@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Russell HQ Photography</title>
+    <title>Russell HQ Photographys</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Stripe.js script for handling checkout redirection -->
     <script src="https://js.stripe.com/v3/"></script>
@@ -655,7 +655,9 @@
                         });
 
                         if (!response.ok) {
-                           throw new Error(`Server responded with ${response.status}`);
+                           const errorBody = await response.text();
+                           console.error('Server error response:', errorBody);
+                           throw new Error(`Server responded with ${response.status}: ${errorBody}`);
                         }
 
                         const session = await response.json();
@@ -1079,4 +1081,4 @@
 
     </script>
 </body>
-</html>
+</ht
